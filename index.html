@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>world cup foari</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div class="auth-shell" id="auth-shell">
+    <section class="auth-card">
+      <h1 class="auth-title">Enter the prediction room.</h1>
+      <p class="auth-text">Continue with your Google account to view and submit World Cup predictions.</p>
+      <div id="google-signin" class="google-signin-slot"></div>
+      <p id="auth-message" class="auth-message">Loading Google sign-in...</p>
+    </section>
+  </div>
+
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">FIFA World Cup 2026</p>
+        <h1>Upcoming fixtures. Real schedule. Shared predictions.</h1>
+        <p class="hero-text">
+          Predict upcoming 2026 World Cup scorelines from FIFA's published schedule, submit your slate to a shared leaderboard,
+          and lock in your picks before kickoff on Thursday, June 11, 2026.
+        </p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#predictor">Build My Picks</a>
+          <a class="button button-ghost" href="#leaderboard">Shared Table</a>
+        </div>
+      </div>
+
+      <aside class="hero-panel">
+        <div class="hero-stat">
+          <span class="stat-label">Tournament Data</span>
+          <strong>16 upcoming matches</strong>
+          <span>Opening slate from the 2026 group stage</span>
+        </div>
+        <div class="hero-stat">
+          <span class="stat-label">Scoring</span>
+          <strong>5 exact / 3 result</strong>
+          <span>Points activate once matches are played</span>
+        </div>
+        <div class="hero-stat">
+          <span class="stat-label">Multiplayer</span>
+          <strong>Shared backend</strong>
+          <span>Predictions persist for every user</span>
+        </div>
+      </aside>
+    </header>
+
+    <main>
+      <section class="dashboard">
+        <article class="summary-card accent-gold">
+          <span class="summary-label">Exact Hits</span>
+          <strong id="exact-count">0</strong>
+          <p>Perfect scoreline calls in your current draft.</p>
+        </article>
+        <article class="summary-card accent-green">
+          <span class="summary-label">Current Points</span>
+          <strong id="score-total">0</strong>
+          <p>Upcoming fixtures stay pending until official results exist.</p>
+        </article>
+        <article class="summary-card accent-red">
+          <span class="summary-label">Leaderboard Rank</span>
+          <strong id="rank-display">-</strong>
+          <p>Your place in the shared table based on submitted entries.</p>
+        </article>
+      </section>
+
+      <section class="panel panel-form" id="predictor">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Prediction Desk</p>
+            <h2>Make your 2026 picks</h2>
+          </div>
+
+          <div class="controls">
+            <label class="input-group">
+              <span>Signed-in user</span>
+              <input id="player-name" type="text" maxlength="24" placeholder="Sign in to continue" readonly>
+            </label>
+            <label class="input-group input-group-select">
+              <span>Stage filter</span>
+              <select id="stage-filter"></select>
+            </label>
+            <button id="logout-button" class="button button-ghost" type="button">Sign Out</button>
+          </div>
+        </div>
+
+        <div class="status-row">
+          <span id="save-status" class="status-pill">Draft saved locally</span>
+          <div class="status-actions">
+            <span class="status-meta" id="sync-meta">Schedule cache not checked yet.</span>
+            <button id="refresh-button" class="button button-ghost" type="button">Refresh Matches</button>
+          </div>
+        </div>
+
+        <div class="share-row">
+          <span class="share-label">Share link</span>
+          <code id="share-url" class="share-url">Start the server to generate a LAN link.</code>
+        </div>
+
+        <div class="match-list" id="match-list"></div>
+
+        <div class="form-footer">
+          <div class="points-key">
+            <span><strong>5</strong> Exact score</span>
+            <span><strong>3</strong> Correct winner or draw</span>
+            <span><strong>0</strong> Missed result</span>
+          </div>
+          <div class="action-row">
+            <button id="submit-button" class="button button-primary" type="button">Submit to Shared Leaderboard</button>
+            <button id="reset-button" class="button button-danger" type="button">Clear My Entry</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel panel-slim">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Tournament Signal</p>
+            <h2>Round snapshot</h2>
+          </div>
+          <p class="panel-note">These fixtures are upcoming, so scoring stays pending until the matches are actually played.</p>
+        </div>
+        <div class="pulse-grid" id="pulse-grid"></div>
+      </section>
+
+      <section class="panel panel-slim" id="leaderboard">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Leaderboard</p>
+            <h2>Shared prediction table</h2>
+          </div>
+          <p class="panel-note" id="leaderboard-note">No shared entries yet.</p>
+        </div>
+        <div class="leaderboard-table">
+          <div class="leaderboard-head">
+            <span>Rank</span>
+            <span>Player</span>
+            <span>Points</span>
+            <span>Exact</span>
+            <span>Updated</span>
+          </div>
+          <div id="leaderboard-body"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="match-card-template">
+    <article class="match-card">
+      <div class="match-topline">
+        <div>
+          <p class="match-stage"></p>
+          <h3 class="match-title"></h3>
+        </div>
+        <span class="match-kickoff"></span>
+      </div>
+
+      <div class="teams-row">
+        <div class="team-block">
+          <div class="team-line">
+            <span class="team-flag home-flag"></span>
+            <span class="team-name home-team"></span>
+          </div>
+          <input class="score-input home-score" type="number" min="0" max="20" inputmode="numeric" aria-label="Home team score">
+        </div>
+
+        <span class="versus">vs</span>
+
+        <div class="team-block team-block-away">
+          <div class="team-line team-line-away">
+            <span class="team-name away-team"></span>
+            <span class="team-flag away-flag"></span>
+          </div>
+          <input class="score-input away-score" type="number" min="0" max="20" inputmode="numeric" aria-label="Away team score">
+        </div>
+      </div>
+
+      <div class="match-bottomline">
+        <div>
+          <div class="actual-score"></div>
+          <div class="winner-note"></div>
+        </div>
+        <div class="match-points"></div>
+      </div>
+    </article>
+  </template>
+
+  <script src="script.js"></script>
+</body>
+</html>
