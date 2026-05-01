@@ -32,7 +32,7 @@
           <a class="button button-ghost" href="https://www.uefa.com/uefachampionsleague/news/029c-1e9a2f63fe2d-ebf9ad643892-1000/" target="_blank" rel="noreferrer">Official UEFA Fixtures</a>
         </div>
 
-        <div class="invite-card">
+        <div id="invite-card" class="invite-card admin-only">
           <div>
             <p class="invite-label">Join This Leaderboard</p>
             <strong>Anyone with this link can sign in and submit picks.</strong>
@@ -99,6 +99,13 @@
               <span>Stage filter</span>
               <select id="stage-filter"></select>
             </label>
+            <div id="admin-code-group" class="input-group admin-code-group">
+              <span>Admin code</span>
+              <div class="admin-code-actions">
+                <input id="admin-code-input" type="password" placeholder="Enter admin code">
+                <button id="admin-code-button" class="button button-ghost" type="button">Unlock</button>
+              </div>
+            </div>
             <button id="logout-button" class="button button-ghost" type="button">Sign Out</button>
           </div>
         </div>
@@ -111,7 +118,7 @@
           </div>
         </div>
 
-        <div class="share-row">
+        <div id="share-row" class="share-row admin-only">
           <span class="share-label">Share link</span>
           <code id="share-url" class="share-url">Start the server to generate a LAN link.</code>
           <span id="share-help" class="share-help">Share this URL so other people can join the same leaderboard.</span>
@@ -152,7 +159,7 @@
           <p class="panel-note" id="leaderboard-note">No shared entries yet.</p>
         </div>
         <div class="join-note">
-          Every player who opens this link, signs in, and submits picks joins this same shared table.
+          Every player who opens this link and signs in joins this same shared table.
         </div>
         <div class="leaderboard-table">
           <div class="leaderboard-head">

@@ -36,6 +36,14 @@ body {
   overflow: hidden;
 }
 
+.admin-only {
+  display: none;
+}
+
+.admin-only.admin-visible {
+  display: flex;
+}
+
 body::before {
   content: "";
   position: fixed;
@@ -232,6 +240,15 @@ body::before {
     rgba(255, 255, 255, 0.04);
 }
 
+.invite-card.admin-only,
+.share-row.admin-only {
+  display: none;
+}
+
+.invite-card.admin-visible {
+  display: grid;
+}
+
 .invite-label {
   margin: 0 0 8px;
   color: var(--sky);
@@ -404,6 +421,20 @@ body::before {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.04);
   flex-wrap: wrap;
+}
+
+.admin-code-group {
+  min-width: 280px;
+}
+
+.admin-code-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.admin-code-actions input {
+  flex: 1;
 }
 
 .share-label {

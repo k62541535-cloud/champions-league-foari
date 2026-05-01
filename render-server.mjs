@@ -28,6 +28,7 @@ const refreshState = {
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const publicBaseUrl = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
+const adminCode = (process.env.ADMIN_CODE || "admin123").trim();
 
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "1mb" }));
@@ -92,6 +93,50 @@ async function writeJsonFile(filePath, data) {
   await fs.writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+function normalizeName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function getPredictionsStore() {
+  const store = (await readJsonFile(predictionsPath, { entries: [], participants: [] })) || {
+    entries: [],
+    participants: []
+  };
+
+  if (!Array.isArray(store.entries)) {
+    store.entries = [];
+  }
+
+  if (!Array.isArray(store.participants)) {
+    store.participants = [];
+  }
+
+  return store;
+}
+
+async function ensureParticipantRegistered(name) {
+  const trimmedName = String(name || "").trim();
+
+  if (!trimmedName) {
+    return;
+  }
+
+  const store = await getPredictionsStore();
+  const existingParticipant = store.participants.find(
+    (participant) => normalizeName(participant.name) === normalizeName(trimmedName)
+  );
+
+  if (existingParticipant) {
+    return;
+  }
+
+  store.participants.push({
+    name: trimmedName,
+    joinedAt: new Date().toISOString()
+  });
+  await writeJsonFile(predictionsPath, store);
+}
+
 function getOutcome(home, away) {
   if (home === away) {
     return "draw";
@@ -129,27 +174,48 @@ function scorePrediction(prediction, match) {
 
 async function getScoredEntries() {
   const matches = (await readJsonFile(matchesPath, [])) || [];
-  const store = (await readJsonFile(predictionsPath, { entries: [] })) || { entries: [] };
-  const entries = Array.isArray(store.entries) ? store.entries : [];
+  const store = await getPredictionsStore();
+  const entries = store.entries;
+  const scoredEntries = entries.map((entry) => {
+    let points = 0;
+    let exact = 0;
 
-  return entries
+    for (const match of matches) {
+      const result = scorePrediction(entry.predictions?.[match.id], match);
+      points += result.points;
+      if (result.exact) {
+        exact += 1;
+      }
+    }
+
+    return {
+      name: entry.name,
+      updatedAt: entry.updatedAt,
+      points,
+      exact,
+      submitted: true
+    };
+  });
+
+  const scoredByName = new Map(scoredEntries.map((entry) => [normalizeName(entry.name), entry]));
+  const joinedEntries = store.participants
+    .filter((participant) => !scoredByName.has(normalizeName(participant.name)))
+    .map((participant) => ({
+      name: participant.name,
+      updatedAt: participant.joinedAt,
+      points: 0,
+      exact: 0,
+      submitted: false
+    }));
+
+  return [...scoredEntries, ...joinedEntries]
     .map((entry) => {
       let points = 0;
       let exact = 0;
-
-      for (const match of matches) {
-        const result = scorePrediction(entry.predictions?.[match.id], match);
-        points += result.points;
-        if (result.exact) {
-          exact += 1;
-        }
-      }
-
       return {
-        name: entry.name,
-        updatedAt: entry.updatedAt,
-        points,
-        exact
+        ...entry,
+        points: entry.points ?? points,
+        exact: entry.exact ?? exact
       };
     })
     .sort((left, right) => {
@@ -161,8 +227,17 @@ async function getScoredEntries() {
         return right.exact - left.exact;
       }
 
+      if (Boolean(right.submitted) !== Boolean(left.submitted)) {
+        return Number(right.submitted) - Number(left.submitted);
+      }
+
       return left.name.localeCompare(right.name);
     });
+}
+
+async function hasExistingSubmission(name) {
+  const store = await getPredictionsStore();
+  return store.entries.some((entry) => normalizeName(entry.name) === normalizeName(name));
 }
 
 const flagMap = {
@@ -467,7 +542,8 @@ app.get("/api/auth/session", (req, res) => {
   res.json({
     authenticated: true,
     user: {
-      username: req.session.user.username
+      username: req.session.user.username,
+      isAdmin: Boolean(req.session.user.isAdmin)
     }
   });
 });
@@ -479,8 +555,10 @@ app.get("/api/auth/google/config", (req, res) => {
 app.post("/api/auth/google", async (req, res) => {
   try {
     const googleUser = await verifyGoogleCredential(req.body?.credential);
+    await ensureParticipantRegistered(googleUser.username);
     req.session.user = {
       ...googleUser,
+      isAdmin: false,
       createdAt: new Date().toISOString()
     };
 
@@ -489,7 +567,8 @@ app.post("/api/auth/google", async (req, res) => {
       user: {
         username: googleUser.username,
         email: googleUser.email,
-        provider: "google"
+        provider: "google",
+        isAdmin: false
       }
     });
   } catch (error) {
@@ -501,6 +580,24 @@ app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
     res.clearCookie("connect.sid");
     res.json({ ok: true });
+  });
+});
+
+app.post("/api/admin/unlock", ensureAuthenticated, async (req, res) => {
+  const code = String(req.body?.code || "").trim();
+
+  if (!code || code !== adminCode) {
+    res.status(403).json({ error: "Admin code is incorrect." });
+    return;
+  }
+
+  req.session.user.isAdmin = true;
+  res.json({
+    ok: true,
+    user: {
+      username: req.session.user.username,
+      isAdmin: true
+    }
   });
 });
 
@@ -526,17 +623,19 @@ app.post("/api/predictions", ensureAuthenticated, async (req, res) => {
     return;
   }
 
-  const store = (await readJsonFile(predictionsPath, { entries: [] })) || { entries: [] };
-  const entries = Array.isArray(store.entries) ? store.entries : [];
-  const nextEntries = entries.filter((entry) => entry.name !== name);
+  if (await hasExistingSubmission(name)) {
+    res.status(403).json({ error: "This account already submitted picks and is now locked." });
+    return;
+  }
 
-  nextEntries.push({
+  await ensureParticipantRegistered(name);
+  const store = await getPredictionsStore();
+  store.entries.push({
     name,
     updatedAt: new Date().toISOString(),
     predictions: req.body?.predictions || {}
   });
 
-  store.entries = nextEntries;
   await writeJsonFile(predictionsPath, store);
 
   res.json({
@@ -546,22 +645,7 @@ app.post("/api/predictions", ensureAuthenticated, async (req, res) => {
 });
 
 app.post("/api/reset", ensureAuthenticated, async (req, res) => {
-  const name = String(req.body?.name || "");
-
-  if (name !== req.session.user.username) {
-    res.status(403).json({ error: "You can only clear your own signed-in account." });
-    return;
-  }
-
-  const store = (await readJsonFile(predictionsPath, { entries: [] })) || { entries: [] };
-  const entries = Array.isArray(store.entries) ? store.entries : [];
-  store.entries = entries.filter((entry) => entry.name !== name);
-  await writeJsonFile(predictionsPath, store);
-
-  res.json({
-    ok: true,
-    leaderboard: await getScoredEntries()
-  });
+  res.status(403).json({ error: "Submitted entries are locked and cannot be reset." });
 });
 
 app.use(express.static(root));

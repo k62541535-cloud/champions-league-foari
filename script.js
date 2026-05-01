@@ -3,21 +3,27 @@ const storageKeys = {
   predictions: "ucl-foari-predictions"
 };
 
+const liveSyncIntervalMs = 5000;
+
 const state = {
   playerName: localStorage.getItem(storageKeys.name) || "",
   stageFilter: "all",
   predictions: readLocalPredictions(),
   matches: [],
   leaderboard: [],
-  lastSubmittedName: "",
   submitting: false,
-  authConfig: null
+  authConfig: null,
+  isAdmin: false,
+  liveSyncTimer: null
 };
 
 const elements = {
   authShell: document.getElementById("auth-shell"),
   authMessage: document.getElementById("auth-message"),
   googleSignin: document.getElementById("google-signin"),
+  adminCodeGroup: document.getElementById("admin-code-group"),
+  adminCodeInput: document.getElementById("admin-code-input"),
+  adminCodeButton: document.getElementById("admin-code-button"),
   playerName: document.getElementById("player-name"),
   stageFilter: document.getElementById("stage-filter"),
   matchList: document.getElementById("match-list"),
@@ -30,6 +36,8 @@ const elements = {
   leaderboardNote: document.getElementById("leaderboard-note"),
   saveStatus: document.getElementById("save-status"),
   syncMeta: document.getElementById("sync-meta"),
+  inviteCard: document.getElementById("invite-card"),
+  shareRow: document.getElementById("share-row"),
   shareUrl: document.getElementById("share-url"),
   heroShareUrl: document.getElementById("hero-share-url"),
   copyShareButton: document.getElementById("copy-share-button"),
@@ -53,6 +61,11 @@ function saveLocalDraft() {
   localStorage.setItem(storageKeys.predictions, JSON.stringify(state.predictions));
 }
 
+function hasLockedSubmission() {
+  const trimmedName = state.playerName.trim().toLowerCase();
+  return Boolean(trimmedName) && state.leaderboard.some((row) => row.name.toLowerCase() === trimmedName && row.submitted !== false);
+}
+
 function setAuthMessage(message, tone = "") {
   elements.authMessage.textContent = message;
   elements.authMessage.className = "auth-message";
@@ -73,6 +86,31 @@ function describeNetworkError(error, fallbackMessage) {
 function setAuthVisibility(isAuthenticated) {
   elements.authShell.classList.toggle("auth-hidden", isAuthenticated);
   document.body.classList.toggle("auth-locked", !isAuthenticated);
+  elements.adminCodeGroup.classList.toggle("admin-only", !isAuthenticated || state.isAdmin);
+}
+
+function renderAdminVisibility() {
+  elements.inviteCard.classList.toggle("admin-visible", state.isAdmin);
+  elements.shareRow.classList.toggle("admin-visible", state.isAdmin);
+  elements.adminCodeGroup.classList.toggle("admin-only", !state.playerName || state.isAdmin);
+}
+
+function stopLiveSync() {
+  if (state.liveSyncTimer) {
+    window.clearInterval(state.liveSyncTimer);
+    state.liveSyncTimer = null;
+  }
+}
+
+function resetAuthenticatedUi() {
+  stopLiveSync();
+  state.playerName = "";
+  state.isAdmin = false;
+  elements.playerName.value = "";
+  elements.adminCodeInput.value = "";
+  localStorage.removeItem(storageKeys.name);
+  setAuthVisibility(false);
+  renderAdminVisibility();
 }
 
 function setStatus(message, tone = "") {
@@ -230,40 +268,6 @@ async function copyShareLink() {
   }
 }
 
-function buildProjectedLeaderboard() {
-  const rows = state.leaderboard.map((row) => ({ ...row, currentUser: false }));
-  const draftName = state.playerName.trim() || "You";
-  const draftSummary = summarizePredictions(state.predictions);
-  const existingIndex = rows.findIndex((row) => row.name.toLowerCase() === draftName.toLowerCase());
-  const projectedEntry = {
-    name: draftName,
-    points: draftSummary.points,
-    exact: draftSummary.exact,
-    updatedAt: new Date().toISOString(),
-    currentUser: true
-  };
-
-  if (existingIndex >= 0) {
-    rows.splice(existingIndex, 1, projectedEntry);
-  } else {
-    rows.push(projectedEntry);
-  }
-
-  rows.sort((left, right) => {
-    if (right.points !== left.points) {
-      return right.points - left.points;
-    }
-
-    if (right.exact !== left.exact) {
-      return right.exact - left.exact;
-    }
-
-    return left.name.localeCompare(right.name);
-  });
-
-  return rows.map((row, index) => ({ ...row, rank: index + 1 }));
-}
-
 function renderStageOptions() {
   const stages = ["all", ...new Set(state.matches.map((match) => match.stage))];
   elements.stageFilter.innerHTML = stages
@@ -299,12 +303,13 @@ function renderMatches() {
     const homeScore = fragment.querySelector(".home-score");
     const awayScore = fragment.querySelector(".away-score");
     const actualScore = fragment.querySelector(".actual-score");
-      const winnerNote = fragment.querySelector(".winner-note");
-      const officialLink = fragment.querySelector(".official-link");
-      const points = fragment.querySelector(".match-points");
-      const rawPrediction = getDraftPrediction(state.predictions[match.id]);
-      const prediction = parsePrediction(rawPrediction);
-      const result = scorePrediction(prediction, match);
+    const winnerNote = fragment.querySelector(".winner-note");
+    const officialLink = fragment.querySelector(".official-link");
+    const points = fragment.querySelector(".match-points");
+    const rawPrediction = getDraftPrediction(state.predictions[match.id]);
+    const prediction = parsePrediction(rawPrediction);
+    const result = scorePrediction(prediction, match);
+    const locked = hasLockedSubmission();
 
     title.textContent = match.title;
     stage.textContent = match.stage;
@@ -316,31 +321,38 @@ function renderMatches() {
     actualScore.textContent = match.actual
       ? `Official score: ${match.actual.home} - ${match.actual.away}`
       : "Official score: not played yet";
-      winnerNote.textContent = match.winnerNote || "";
-      if (match.officialUrl) {
-        officialLink.href = match.officialUrl;
-      } else {
-        officialLink.removeAttribute("href");
-        officialLink.textContent = "No official link";
+    winnerNote.textContent = match.winnerNote || "";
+    if (match.officialUrl) {
+      officialLink.href = match.officialUrl;
+      officialLink.textContent = "UEFA source";
+    } else {
+      officialLink.removeAttribute("href");
+      officialLink.textContent = "No official link";
+    }
+    points.textContent = result.label;
+    points.classList.add(`points-${result.status}`);
+
+    homeScore.value = rawPrediction.home;
+    awayScore.value = rawPrediction.away;
+    homeScore.disabled = locked;
+    awayScore.disabled = locked;
+
+    const updatePrediction = () => {
+      if (locked) {
+        return;
       }
-      points.textContent = result.label;
-      points.classList.add(`points-${result.status}`);
 
-      homeScore.value = rawPrediction.home;
-      awayScore.value = rawPrediction.away;
+      const nextHome = homeScore.value.trim();
+      const nextAway = awayScore.value.trim();
 
-      const updatePrediction = () => {
-        const nextHome = homeScore.value.trim();
-        const nextAway = awayScore.value.trim();
-
-        if (!nextHome && !nextAway) {
-          delete state.predictions[match.id];
-        } else {
-          state.predictions[match.id] = {
-            home: nextHome,
-            away: nextAway
-          };
-        }
+      if (!nextHome && !nextAway) {
+        delete state.predictions[match.id];
+      } else {
+        state.predictions[match.id] = {
+          home: nextHome,
+          away: nextAway
+        };
+      }
 
       saveLocalDraft();
       setStatus("Draft saved locally");
@@ -391,19 +403,30 @@ function renderSummary() {
   elements.scoreTotal.textContent = String(summary.points);
   elements.exactCount.textContent = String(summary.exact);
 
-  const rows = buildProjectedLeaderboard();
-  const current = rows.find((row) => row.currentUser);
+  const currentName = state.playerName.trim().toLowerCase();
+  const rows = state.leaderboard.map((row, index) => ({ ...row, rank: index + 1 }));
+  const current = rows.find((row) => row.name.toLowerCase() === currentName);
   elements.rankDisplay.textContent = current ? `#${current.rank}` : "-";
+
+  const locked = hasLockedSubmission();
+  elements.submitButton.disabled = locked || state.submitting;
+  elements.resetButton.disabled = true;
+  elements.resetButton.textContent = locked ? "Entry Locked" : "Reset Disabled";
 }
 
 function renderLeaderboard() {
   if (!state.leaderboard.length) {
-    elements.leaderboardNote.textContent = "No shared entries yet. Share the link and submit the first pick.";
+    elements.leaderboardNote.textContent = "No shared entries yet. Share the link and sign in the first player.";
   } else {
     elements.leaderboardNote.textContent = `${state.leaderboard.length} player${state.leaderboard.length === 1 ? "" : "s"} joined this shared leaderboard.`;
   }
 
-  const rows = buildProjectedLeaderboard();
+  const currentName = state.playerName.trim().toLowerCase();
+  const rows = state.leaderboard.map((row, index) => ({
+    ...row,
+    rank: index + 1,
+    currentUser: row.name.toLowerCase() === currentName
+  }));
   elements.leaderboardBody.innerHTML = rows
     .map((row) => {
       return `
@@ -450,6 +473,35 @@ async function fetchBootstrap() {
   }
 }
 
+function applyBootstrapPayload(payload) {
+  state.matches = payload.matches;
+  state.leaderboard = payload.leaderboard;
+  renderStageOptions();
+  renderAll();
+  renderRefreshMeta(payload.refreshInfo);
+  renderShareUrl(payload.serverInfo);
+}
+
+async function syncLiveData() {
+  try {
+    const payload = await fetchBootstrap();
+    applyBootstrapPayload(payload);
+  } catch (error) {
+    if (error.message === "AUTH_REQUIRED") {
+      resetAuthenticatedUi();
+      setStatus("Sign in to continue.", "error");
+      initializeGoogleSignIn();
+    }
+  }
+}
+
+function startLiveSync() {
+  stopLiveSync();
+  state.liveSyncTimer = window.setInterval(() => {
+    void syncLiveData();
+  }, liveSyncIntervalMs);
+}
+
 async function fetchSession() {
   try {
     return await fetchJson("/api/auth/session");
@@ -460,6 +512,36 @@ async function fetchSession() {
 
 async function fetchGoogleConfig() {
   return fetchJson("/api/auth/google/config");
+}
+
+async function unlockAdminAccess() {
+  const code = elements.adminCodeInput.value.trim();
+
+  if (!code) {
+    setStatus("Enter the admin code first.", "error");
+    return;
+  }
+
+  elements.adminCodeButton.disabled = true;
+
+  try {
+    const payload = await fetchJson("/api/admin/unlock", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ code })
+    });
+
+    state.isAdmin = Boolean(payload.user?.isAdmin);
+    elements.adminCodeInput.value = "";
+    renderAdminVisibility();
+    setStatus("Admin access unlocked.", "success");
+  } catch (error) {
+    setStatus(describeNetworkError(error, "Admin unlock failed."), "error");
+  } finally {
+    elements.adminCodeButton.disabled = false;
+  }
 }
 
 async function handleGoogleCredential(response) {
@@ -480,9 +562,11 @@ async function handleGoogleCredential(response) {
     });
 
     state.playerName = payload.user.username;
+    state.isAdmin = Boolean(payload.user.isAdmin);
     elements.playerName.value = state.playerName;
     saveLocalDraft();
     setAuthVisibility(true);
+    renderAdminVisibility();
     setAuthMessage("Signed in.", "success");
     await initApp();
   } catch (error) {
@@ -534,6 +618,11 @@ async function submitPredictions() {
     return;
   }
 
+  if (hasLockedSubmission()) {
+    setStatus("Your Champions League entry is locked and already on the leaderboard.", "error");
+    return;
+  }
+
   state.submitting = true;
   elements.submitButton.disabled = true;
   setStatus("Submitting to shared leaderboard...");
@@ -541,19 +630,18 @@ async function submitPredictions() {
   try {
     const payload = await fetchJson("/api/predictions", {
       method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          name: trimmedName,
-          predictions: buildSubmissionPredictions()
-        })
-      });
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        name: trimmedName,
+        predictions: buildSubmissionPredictions()
+      })
+    });
 
     state.leaderboard = payload.leaderboard;
-    state.lastSubmittedName = trimmedName;
     saveLocalDraft();
-    setStatus("Shared leaderboard updated.", "success");
+    setStatus("Entry submitted and locked into the leaderboard.", "success");
     renderAll();
   } catch (error) {
     setStatus(describeNetworkError(error, "Submission failed."), "error");
@@ -565,20 +653,15 @@ async function submitPredictions() {
 
 async function refreshMatches() {
   elements.refreshButton.disabled = true;
-      setStatus("Reloading Champions League fixtures...");
+  setStatus("Reloading Champions League fixtures...");
 
   try {
     const payload = await fetchJson("/api/refresh", {
       method: "POST"
     });
 
-    state.matches = payload.matches;
-    state.leaderboard = payload.leaderboard;
-    renderStageOptions();
-    renderAll();
-    renderRefreshMeta(payload.refreshInfo);
-    renderShareUrl(payload.serverInfo);
-      setStatus(payload.refreshInfo?.lastRefreshSucceeded ? "UEFA-linked fixture slate refreshed." : "Refresh attempted - using cached data.", payload.refreshInfo?.lastRefreshSucceeded ? "success" : "error");
+    applyBootstrapPayload(payload);
+    setStatus(payload.refreshInfo?.lastRefreshSucceeded ? "UEFA-linked fixture slate refreshed." : "Refresh attempted - using cached data.", payload.refreshInfo?.lastRefreshSucceeded ? "success" : "error");
   } catch (error) {
     setStatus(describeNetworkError(error, "Refresh failed."), "error");
   } finally {
@@ -587,33 +670,7 @@ async function refreshMatches() {
 }
 
 async function resetEntry() {
-  const trimmedName = state.playerName.trim();
-  state.predictions = {};
-  saveLocalDraft();
-
-  if (!trimmedName) {
-    setStatus("Local draft cleared.");
-    renderAll();
-    return;
-  }
-
-  setStatus("Clearing local draft and shared entry...");
-
-  try {
-    const payload = await fetchJson("/api/reset", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ name: trimmedName })
-    });
-
-    state.leaderboard = payload.leaderboard;
-    setStatus("Local draft and shared entry cleared.", "success");
-  } catch (error) {
-    setStatus(describeNetworkError(error, "Reset failed."), "error");
-  }
-
+  setStatus("Submitted entries are locked and cannot be reset.", "error");
   renderAll();
 }
 
@@ -624,22 +681,15 @@ async function logout() {
     // Keep local logout resilient even if the request fails.
   }
 
-  state.playerName = "";
-  elements.playerName.value = "";
-  localStorage.removeItem(storageKeys.name);
-  setAuthVisibility(false);
+  resetAuthenticatedUi();
   initializeGoogleSignIn();
   setAuthMessage("Signed out.");
 }
 
 async function initApp() {
   const payload = await fetchBootstrap();
-  state.matches = payload.matches;
-  state.leaderboard = payload.leaderboard;
-  renderStageOptions();
-  renderAll();
-  renderRefreshMeta(payload.refreshInfo);
-  renderShareUrl(payload.serverInfo);
+  applyBootstrapPayload(payload);
+  startLiveSync();
   setStatus("Draft saved locally");
 }
 
@@ -649,19 +699,22 @@ async function init() {
     const session = await fetchSession();
 
     if (!session.authenticated) {
-      setAuthVisibility(false);
+      resetAuthenticatedUi();
       initializeGoogleSignIn();
       return;
     }
 
     state.playerName = session.user.username;
+    state.isAdmin = Boolean(session.user.isAdmin);
     elements.playerName.value = state.playerName;
     setAuthVisibility(true);
+    renderAdminVisibility();
     setStatus("Loading tournament data...");
     await initApp();
   } catch (error) {
     if (error.message === "AUTH_REQUIRED") {
-      setAuthVisibility(false);
+      resetAuthenticatedUi();
+      setStatus("Sign in to continue.", "error");
       initializeGoogleSignIn();
       return;
     }
@@ -681,5 +734,6 @@ elements.submitButton.addEventListener("click", submitPredictions);
 elements.logoutButton.addEventListener("click", logout);
 elements.resetButton.addEventListener("click", resetEntry);
 elements.copyShareButton.addEventListener("click", copyShareLink);
+elements.adminCodeButton.addEventListener("click", unlockAdminAccess);
 
 init();

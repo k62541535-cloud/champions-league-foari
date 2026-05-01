@@ -22,6 +22,7 @@ $serverState = @{
 }
 $configState = @{
   googleClientId = $null
+  adminCode = $null
 }
 
 function Import-DotEnvFile {
@@ -70,6 +71,10 @@ function Get-ConfigValue {
 Import-DotEnvFile -Path (Join-Path $root ".env")
 Import-DotEnvFile -Path (Join-Path $root ".env.local")
 $configState.googleClientId = Get-ConfigValue -Name "GOOGLE_CLIENT_ID"
+$configState.adminCode = Get-ConfigValue -Name "ADMIN_CODE"
+if ([string]::IsNullOrWhiteSpace($configState.adminCode)) {
+  $configState.adminCode = "admin123"
+}
 
 function Read-JsonFile {
   param([string]$Path)
@@ -89,6 +94,60 @@ function Write-JsonFile {
 
   $json = $Data | ConvertTo-Json -Depth 100
   Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function Normalize-PlayerName {
+  param([string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return ""
+  }
+
+  $Value.Trim().ToLowerInvariant()
+}
+
+function Get-PredictionsStore {
+  $store = Read-JsonFile -Path $predictionsPath
+
+  if ($null -eq $store) {
+    $store = [pscustomobject]@{
+      entries = @()
+      participants = @()
+    }
+  }
+
+  if ($null -eq $store.entries) {
+    $store | Add-Member -NotePropertyName entries -NotePropertyValue @() -Force
+  }
+
+  if ($null -eq $store.participants) {
+    $store | Add-Member -NotePropertyName participants -NotePropertyValue @() -Force
+  }
+
+  $store
+}
+
+function Ensure-ParticipantRegistered {
+  param([string]$Name)
+
+  if ([string]::IsNullOrWhiteSpace($Name)) {
+    return
+  }
+
+  $store = Get-PredictionsStore
+  $normalizedName = Normalize-PlayerName -Value $Name
+  $existing = @($store.participants | Where-Object { (Normalize-PlayerName -Value $_.name) -eq $normalizedName }) | Select-Object -First 1
+
+  if ($null -ne $existing) {
+    return
+  }
+
+  $store.participants += [pscustomobject]@{
+    name = $Name.Trim()
+    joinedAt = [DateTime]::UtcNow.ToString("o")
+  }
+
+  Write-JsonFile -Path $predictionsPath -Data $store
 }
 
 function New-SessionId {
@@ -219,12 +278,8 @@ function Score-Prediction {
 
 function Get-ScoredEntries {
   $matches = @(Read-JsonFile -Path $matchesPath)
-  $store = Read-JsonFile -Path $predictionsPath
-  $entries = @()
-
-  if ($null -ne $store -and $null -ne $store.entries) {
-    $entries = @($store.entries)
-  }
+  $store = Get-PredictionsStore
+  $entries = @($store.entries)
 
   $scored = foreach ($entry in $entries) {
     $points = 0
@@ -242,10 +297,37 @@ function Get-ScoredEntries {
       updatedAt = $entry.updatedAt
       points = $points
       exact = $exact
+      submitted = $true
     }
   }
 
-  $scored | Sort-Object -Property @{ Expression = "points"; Descending = $true }, @{ Expression = "exact"; Descending = $true }, @{ Expression = "name"; Descending = $false }
+  $joinedOnly = foreach ($participant in @($store.participants)) {
+    $alreadySubmitted = @($entries | Where-Object { (Normalize-PlayerName -Value $_.name) -eq (Normalize-PlayerName -Value $participant.name) }).Count -gt 0
+
+    if (-not $alreadySubmitted) {
+      [pscustomobject]@{
+        name = $participant.name
+        updatedAt = $participant.joinedAt
+        points = 0
+        exact = 0
+        submitted = $false
+      }
+    }
+  }
+
+  @($scored + $joinedOnly) | Sort-Object -Property @{ Expression = "points"; Descending = $true }, @{ Expression = "exact"; Descending = $true }, @{ Expression = "submitted"; Descending = $true }, @{ Expression = "name"; Descending = $false }
+}
+
+function Test-HasExistingSubmission {
+  param([string]$Name)
+
+  $store = Get-PredictionsStore
+  if ($null -eq $store.entries) {
+    return $false
+  }
+
+  $normalizedName = Normalize-PlayerName -Value $Name
+  @($store.entries | Where-Object { (Normalize-PlayerName -Value $_.name) -eq $normalizedName }).Count -gt 0
 }
 
 function Get-FlagMap {
@@ -657,7 +739,7 @@ function Handle-Api {
 
     Send-Json -Client $Client -Body @{
       authenticated = $true
-      user = @{ username = $user.username }
+      user = @{ username = $user.username; isAdmin = [bool]$user.isAdmin }
     }
     return
   }
@@ -671,6 +753,7 @@ function Handle-Api {
     try {
       $payload = Read-RequestJson -Request $Request
       $googleUser = Verify-GoogleCredential -Credential ([string]$payload.credential)
+      Ensure-ParticipantRegistered -Name $googleUser.username
       $sessionId = New-SessionId
       $sessions[$sessionId] = @{
         username = $googleUser.username
@@ -678,6 +761,7 @@ function Handle-Api {
         picture = $googleUser.picture
         provider = "google"
         subject = $googleUser.subject
+        isAdmin = $false
         createdAt = [DateTime]::UtcNow.ToString("o")
       }
 
@@ -687,6 +771,7 @@ function Handle-Api {
           username = $googleUser.username
           email = $googleUser.email
           provider = "google"
+          isAdmin = $false
         }
       } -ExtraHeaders @(Set-SessionCookieHeader -SessionId $sessionId)
     } catch {
@@ -778,6 +863,26 @@ function Handle-Api {
     return
   }
 
+  if ($path -eq "/api/admin/unlock" -and $Request.Method -eq "POST") {
+    $payload = Read-RequestJson -Request $Request
+    $code = [string]$payload.code
+
+    if ($code.Trim() -ne $configState.adminCode.Trim()) {
+      Send-Json -Client $Client -Body @{ error = "Admin code is incorrect." } -StatusCode 403
+      return
+    }
+
+    $authenticatedUser.isAdmin = $true
+    Send-Json -Client $Client -Body @{
+      ok = $true
+      user = @{
+        username = $authenticatedUser.username
+        isAdmin = $true
+      }
+    }
+    return
+  }
+
   if ($path -eq "/api/bootstrap" -and $Request.Method -eq "GET") {
     Send-Json -Client $Client -Body (Get-BootstrapPayload)
     return
@@ -803,12 +908,14 @@ function Handle-Api {
       return
     }
 
-    $store = Read-JsonFile -Path $predictionsPath
-    if ($null -eq $store) {
-      $store = [pscustomobject]@{ entries = @() }
+    if (Test-HasExistingSubmission -Name $name) {
+      Send-Json -Client $Client -Body @{ error = "This account already submitted picks and is now locked." } -StatusCode 403
+      return
     }
 
-    $entries = @($store.entries | Where-Object { $_.name -ne $name })
+    Ensure-ParticipantRegistered -Name $name
+    $store = Get-PredictionsStore
+    $entries = @($store.entries)
     $entries += [pscustomobject]@{
       name = $name
       updatedAt = [DateTime]::UtcNow.ToString("o")
@@ -825,26 +932,7 @@ function Handle-Api {
   }
 
   if ($path -eq "/api/reset" -and $Request.Method -eq "POST") {
-    $payload = Read-RequestJson -Request $Request
-    $name = [string]$payload.name
-
-    if ($name -ne $authenticatedUser.username) {
-      Send-Json -Client $Client -Body @{ error = "You can only clear your own signed-in account." } -StatusCode 403
-      return
-    }
-
-    $store = Read-JsonFile -Path $predictionsPath
-    if ($null -eq $store) {
-      $store = [pscustomobject]@{ entries = @() }
-    }
-
-    $store.entries = @($store.entries | Where-Object { $_.name -ne $name })
-    Write-JsonFile -Path $predictionsPath -Data $store
-
-    Send-Json -Client $Client -Body @{
-      ok = $true
-      leaderboard = @(Get-ScoredEntries)
-    }
+    Send-Json -Client $Client -Body @{ error = "Submitted entries are locked and cannot be reset." } -StatusCode 403
     return
   }
 
