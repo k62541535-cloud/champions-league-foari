@@ -309,6 +309,7 @@ function renderMatches() {
     const rawPrediction = getDraftPrediction(state.predictions[match.id]);
     const prediction = parsePrediction(rawPrediction);
     const result = scorePrediction(prediction, match);
+    const hasPredictionInput = Boolean(rawPrediction.home || rawPrediction.away);
     const locked = hasLockedSubmission();
 
     title.textContent = match.title;
@@ -318,9 +319,11 @@ function renderMatches() {
     awayFlag.textContent = match.awayFlag;
     homeTeam.textContent = match.home;
     awayTeam.textContent = match.away;
-    actualScore.textContent = match.actual
-      ? `Official score: ${match.actual.home} - ${match.actual.away}`
-      : "Official score: not played yet";
+    actualScore.textContent = hasPredictionInput
+      ? (match.actual
+        ? `Official score: ${match.actual.home} - ${match.actual.away}`
+        : "Official score: not played yet")
+      : "Official score: hidden until you enter a pick";
     winnerNote.textContent = match.winnerNote || "";
     if (match.officialUrl) {
       officialLink.href = match.officialUrl;
@@ -344,6 +347,7 @@ function renderMatches() {
 
       const nextHome = homeScore.value.trim();
       const nextAway = awayScore.value.trim();
+      const hasNextPredictionInput = Boolean(nextHome || nextAway);
 
       if (!nextHome && !nextAway) {
         delete state.predictions[match.id];
@@ -362,6 +366,11 @@ function renderMatches() {
       renderLeaderboard();
 
       const updatedResult = scorePrediction(parsePrediction(state.predictions[match.id]), match);
+      actualScore.textContent = hasNextPredictionInput
+        ? (match.actual
+          ? `Official score: ${match.actual.home} - ${match.actual.away}`
+          : "Official score: not played yet")
+        : "Official score: hidden until you enter a pick";
       points.textContent = updatedResult.label;
       points.className = "match-points";
       points.classList.add(`points-${updatedResult.status}`);
